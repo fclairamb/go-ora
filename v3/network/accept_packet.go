@@ -81,6 +81,9 @@ func newAcceptPacketFromData(packetData []byte, config *configurations.Connectio
 	//this.m_FastAuthEnabled = (this.m_ACFL2 & TNSPacketOffsets.NSGENBFAT) != 0;
 	pck.sessionCtx.FastAuthEnabled = pck.sessionCtx.NegotiatedOptions2&0x10000000 != 0
 	pck.sessionCtx.EODDAFlagEnabled = pck.sessionCtx.NegotiatedOptions2&0x2000000 != 0
+	if int(pck.dataOffset) > len(packetData) {
+		return nil
+	}
 	pck.buffer = packetData[int(pck.dataOffset):]
 	if pck.sessionCtx.Version >= 319 && pck.length >= (45+16) {
 		pck.sessionCtx.UUID = packetData[45 : 45+16]

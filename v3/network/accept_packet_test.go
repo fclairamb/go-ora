@@ -44,3 +44,69 @@ func TestNewAcceptPacketFromDataShortPacket(t *testing.T) {
 		t.Error("EODDAFlagEnabled = true, want false for short accept packet")
 	}
 }
+
+// Oracle 18c XE speaks TNS version 315 and replies with a 41-byte accept
+// packet: the 32-bit SDU/TDU at [32:40] and one more byte, but no fast-auth
+// negotiation flags at [41:45].
+func TestNewAcceptPacketFromData18cPacket(t *testing.T) {
+	packetData := make([]byte, 41)
+	binary.BigEndian.PutUint16(packetData[0:], 41)
+	packetData[4] = uint8(ACCEPT)
+	binary.BigEndian.PutUint16(packetData[8:], 315)
+	binary.BigEndian.PutUint16(packetData[10:], 0x0801)
+	binary.BigEndian.PutUint16(packetData[12:], 0xffff)
+	binary.BigEndian.PutUint16(packetData[14:], 0xffff)
+	binary.BigEndian.PutUint16(packetData[16:], 0x7f08)
+	binary.BigEndian.PutUint16(packetData[18:], 0)
+	binary.BigEndian.PutUint16(packetData[20:], 41)
+	binary.BigEndian.PutUint32(packetData[32:], 8192)
+	binary.BigEndian.PutUint32(packetData[36:], 65535)
+
+	pck := newAcceptPacketFromData(packetData, &configurations.ConnectionConfig{})
+	if pck == nil {
+		t.Fatal("expected accept packet, got nil")
+	}
+	if pck.sessionCtx.SessionDataUnit != 8192 {
+		t.Errorf("SessionDataUnit = %d, want 8192", pck.sessionCtx.SessionDataUnit)
+	}
+	if pck.sessionCtx.NegotiatedOptions2 != 0 || pck.sessionCtx.FastAuthEnabled {
+		t.Error("short 18c accept packet must not enable fast auth")
+	}
+}
+
+// A data offset past the end of the packet must be rejected, not panic.
+func TestNewAcceptPacketFromDataOffsetPastEnd(t *testing.T) {
+	packetData := make([]byte, 32)
+	binary.BigEndian.PutUint16(packetData[0:], 32)
+	packetData[4] = uint8(ACCEPT)
+	binary.BigEndian.PutUint16(packetData[8:], 314)
+	binary.BigEndian.PutUint16(packetData[20:], 200)
+	if pck := newAcceptPacketFromData(packetData, &configurations.ConnectionConfig{}); pck != nil {
+		t.Fatal("expected nil for an out-of-range data offset")
+	}
+}
+
+// Malformed responses (a non-Oracle peer whose bytes happen to carry the
+// ACCEPT type) make newAcceptPacketFromData return nil. readPacket must
+// translate that nil into an error instead of handing callers a typed-nil
+// interface, which passes their type assertions and panics on first field
+// access (see Session.Connect).
+func TestNewAcceptPacketFromDataMalformed(t *testing.T) {
+	// truncated header: 8-byte TNS header, ACCEPT type, no body
+	short := make([]byte, 8)
+	short[4] = uint8(ACCEPT)
+	if pck := newAcceptPacketFromData(short, &configurations.ConnectionConfig{}); pck != nil {
+		t.Errorf("expected nil for 8-byte accept packet, got %+v", pck)
+	}
+
+	// full-size header whose accept-data length disagrees with the actual
+	// buffer length (bytes [18:20] announce 4 bytes but the data offset
+	// leaves none)
+	mismatch := make([]byte, 64)
+	mismatch[4] = uint8(ACCEPT)
+	binary.BigEndian.PutUint16(mismatch[18:], 4)  // accept data length
+	binary.BigEndian.PutUint16(mismatch[20:], 64) // accept data offset
+	if pck := newAcceptPacketFromData(mismatch, &configurations.ConnectionConfig{}); pck != nil {
+		t.Errorf("expected nil for length-mismatch accept packet, got %+v", pck)
+	}
+}
